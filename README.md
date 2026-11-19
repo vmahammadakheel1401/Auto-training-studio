@@ -1,62 +1,60 @@
 # AutoML Studio
 
-**100% Client-Side • Zero APIs**
+AutoML Studio is a browser-based machine-learning workspace for exploring CSV data, training a suitable model, and trying predictions. It supports both supervised learning and unsupervised analysis, with a guided workflow from data audit to results and export.
 
-AutoML Studio is a browser-based, no-code machine learning platform that lets you audit datasets, train models, compare performance, run real-time what-if predictions, and export production-ready Python code—all locally in your browser with zero external API calls.
+## Features
 
----
+- Upload a CSV file or start with one of four built-in sample datasets.
+- Review column types, missing values, and dataset cleaning details.
+- Automatically identify a supervised task (regression or classification) or use unsupervised analysis.
+- Train an automatically selected model, or choose another supported model in the results step.
+- Explore live predictions, projections, clusters, or association rules, depending on the task.
+- Export the trained model state as JSON or download a Python training script. A browser-generated pickle export is also available for supported models.
+- Switch between light and dark themes.
 
-## ✨ Key Features
+## Sample datasets
 
-- **1. Upload & Audit:** Upload custom CSV datasets or explore built-in sample data (e.g., `house_prices.csv`).
-- **2. Configure & Train:** Automatically handles preprocessing—including median/most-frequent imputation, standard scaling for numerical features, and one-hot encoding for categorical variables—with an 80/20 train/test split.
-- **3. Model Leaderboard:** Train and compare multiple machine learning models across standard evaluation metrics ($R^2$, RMSE, MAE) to identify the top performer.
-- **4. Live What-If Predictor:** Interactively adjust numeric sliders and categorical dropdowns to see real-time target predictions alongside dataset min/max bounds.
-- **5. One-Click Export:**
-  - **Python Script (`.py`):** Download a clean, reproducible `scikit-learn` pipeline script tailored to your dataset and winning model, ready for `joblib` serialization.
-  - **Model State (`.json`):** Export trained browser model weights for lightweight portability.
+| Dataset | Learning task |
+| --- | --- |
+| House Prices | Supervised regression |
+| Customer Churn | Supervised classification |
+| Customer Segmentation | Unsupervised clustering |
+| Market Basket Transactions | Unsupervised association-rule mining |
 
----
+The House Prices dataset loads automatically when the app starts. Use **Load Sample Data** in the top navigation to switch datasets.
 
-## 📸 Screenshots
+## Run locally
 
-### 1. Upload & Data Audit
-<img width="1913" height="957" alt="Screenshot 2026-11-19 144508" src="https://github.com/user-attachments/assets/faa9018f-1272-4cde-8dc5-c3b6e96bf172" />
+### Requirements
 
+- Node.js
+- npm
 
-### 2. Model Leaderboard
-<img width="1916" height="932" alt="Screenshot 2026-11-19 144524" src="https://github.com/user-attachments/assets/21862d7b-b33b-457c-b25f-cfcadb2c3a43" />
-
-
-### 3. Live What-If Predictor & Code Export
-<img width="1919" height="945" alt="Screenshot 2026-11-19 144545" src="https://github.com/user-attachments/assets/f8df8808-5737-4145-a815-9d7bfb357b87" />
-
-
----predictor (<img width="1915" height="950" alt="Screenshot 2026-11-19 144613" src="https://github.com/user-attachments/assets/74fa2f6b-1a0e-4bd8-80b6-c7f5b06e9126" />
-)
-
-## 🛠️ Tech Stack & Generated Pipeline
-
-While training and inference run 100% client-side in the browser, exported scripts target standard Python data science tooling:
-
-- **Preprocessing:** `ColumnTransformer`, `SimpleImputer`, `StandardScaler`, `OneHotEncoder`
-- **Modeling:** `scikit-learn` (e.g., `Ridge` Regression)
-- **Evaluation & Persistence:** `r2_score`, `root_mean_squared_error`, `mean_absolute_error`, `joblib`
-
----
-
-## 🚀 Getting Started
-
-### Using the Web App
-1. Open the [AutoML Studio Web App](https://nocode-automl-studio-oyrc.vercel.app/) in your browser.
-2. Click **Load Sample Data** (or upload your own `.csv` file) in **Step 1: Upload & Audit**.
-3. Select your target variable and train models in **Step 2: Configure & Train**.
-4. Review top-performing models in **Step 3: Model Leaderboard**.
-5. Test scenarios in **Step 4: Predict & Export** and download the `.py` script or `.json` weights.
-
-### Running an Exported Python Pipeline
-If you export the generated `scikit-learn` script, install the required dependencies and run it locally:
+### Install and start
 
 ```bash
-pip install pandas scikit-learn joblib
-python train_pipeline.py
+npm install
+npm run dev
+```
+
+Open the local URL printed by Vite (by default, [http://localhost:3000](http://localhost:3000)). If that port is already in use, Vite may choose another available port and show it in the terminal.
+
+## Available scripts
+
+| Command | Description |
+| --- | --- |
+| `npm run dev` | Start the Vite development server |
+| `npm run build` | Create a production build in `dist/` |
+| `npm run preview` | Preview the production build locally |
+| `npm run lint` | Run the TypeScript compiler without emitting files |
+
+## Typical workflow
+
+1. Start with the default House Prices sample, choose another sample, or upload a `.csv` file in **Upload & Audit**.
+2. Review the dataset audit and configure the learning mode, target column, excluded ID columns, or model in **Auto-Model & Results**.
+3. Inspect the results, then continue to **Predict & Export** to try what-if inputs or explore the unsupervised output.
+4. Download the available JSON model state, Python script, or pickle export.
+
+## Technology
+
+The interface is built with React, TypeScript, and Vite. Data parsing, preprocessing, model training, and predictions for the interactive workflow run in the browser. The generated Python scripts use the Python machine-learning tooling specified in each export.
