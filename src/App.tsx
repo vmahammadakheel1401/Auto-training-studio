@@ -528,7 +528,9 @@ export default function App() {
           />
         )}
 
-        {activeStep === 3 && runResult && <StepPredictExport run={runResult} />}
+        {activeStep === 3 && runResult && dataset && (
+          <StepPredictExport run={runResult} dataset={dataset} />
+        )}
       </main>
     </div>
   );

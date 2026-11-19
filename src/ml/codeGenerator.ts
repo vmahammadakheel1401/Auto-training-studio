@@ -191,11 +191,15 @@ function generateSupervisedPythonScript(run: AutoMLRunResult): string {
       ? 'from sklearn.metrics import r2_score, root_mean_squared_error, mean_absolute_error'
       : 'from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, classification_report';
 
-  const stratifyLine = taskType === 'classification' ? '    stratify=y,\n' : '';
-  const denseNote =
-    winner.sklearnName === 'GaussianNB' || winner.sklearnName === 'LinearDiscriminantAnalysis'
-      ? 'OneHotEncoder(handle_unknown="ignore", sparse_output=False)'
-      : 'OneHotEncoder(handle_unknown="ignore")';
+  const stratifyBlock =
+    taskType === 'classification'
+      ? 'stratify_col = y if y.value_counts().min() >= 2 else None\n'
+      : '';
+  const stratifyLine =
+    taskType === 'classification'
+      ? '    stratify=stratify_col,\n'
+      : '';
+  const denseNote = 'OneHotEncoder(handle_unknown="ignore", sparse_output=False)';
 
   const evalBlock =
     taskType === 'regression'
@@ -208,7 +212,7 @@ print(f"Accuracy : {accuracy_score(y_test, y_pred):.4f}")
 print(f"Precision: {precision_score(y_test, y_pred, average='macro', zero_division=0):.4f}")
 print(f"Recall   : {recall_score(y_test, y_pred, average='macro', zero_division=0):.4f}")
 print(f"F1 Score : {f1_score(y_test, y_pred, average='macro', zero_division=0):.4f}")
-print("\\nClassification Report:\\n", classification_report(y_test, y_pred))`;
+print("\\nClassification Report:\\n", classification_report(y_test, y_pred, zero_division=0))`;
 
   const commentedSnippet = generatePickleSnippet(run)
     .split('\n')
@@ -229,7 +233,7 @@ from sklearn.compose import ColumnTransformer
 from sklearn.impute import SimpleImputer
 from sklearn.model_selection import train_test_split
 from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import OneHotEncoder, StandardScaler
+from sklearn.preprocessing import OneHotEncoder, ${winner.sklearnName === 'MultinomialNB' ? 'MinMaxScaler' : 'StandardScaler'}
 ${sklearnModelImport}
 ${metricsImport}
 
@@ -237,19 +241,25 @@ ${metricsImport}
 df = pd.read_csv(${JSON.stringify(fileName)})
 TARGET_COL = ${JSON.stringify(targetColumn)}
 DROPPED_ID_COLS = ${formatPyList(droppedIds)}
+NUMERIC_FEATURES = ${formatPyList(numericFeatures)}
+CATEGORICAL_FEATURES = ${formatPyList(categoricalFeatures)}
+
+for col in NUMERIC_FEATURES:
+    if col in df.columns:
+        df[col] = pd.to_numeric(
+            df[col].astype(str).str.replace(r"[$,%]", "", regex=True),
+            errors="coerce",
+        )
 
 df = df.dropna(subset=[TARGET_COL])
 X = df.drop(columns=[c for c in [TARGET_COL, *DROPPED_ID_COLS] if c in df.columns])
 y = df[TARGET_COL]
 
 # 2. Define feature schema
-NUMERIC_FEATURES = ${formatPyList(numericFeatures)}
-CATEGORICAL_FEATURES = ${formatPyList(categoricalFeatures)}
-
 numeric_transformer = Pipeline(
     steps=[
         ("imputer", SimpleImputer(strategy="median")),
-        ("scaler", StandardScaler()),
+        ("scaler", ${winner.sklearnName === 'MultinomialNB' ? 'MinMaxScaler()' : 'StandardScaler()'}),
     ]
 )
 
@@ -264,7 +274,8 @@ preprocessor = ColumnTransformer(
     transformers=[
         ("num", numeric_transformer, NUMERIC_FEATURES),
         ("cat", categorical_transformer, CATEGORICAL_FEATURES),
-    ]
+    ],
+    sparse_threshold=0,
 )
 
 # 3. Bundle preprocessor + model into a single Pipeline (${winner.name})
@@ -276,7 +287,7 @@ pipeline = Pipeline(
 )
 
 # 4. 80/20 Train/Test Split & Fit
-X_train, X_test, y_train, y_test = train_test_split(
+${stratifyBlock}X_train, X_test, y_train, y_test = train_test_split(
     X,
     y,
     test_size=0.20,
@@ -326,14 +337,32 @@ from mlxtend.frequent_patterns import apriori, association_rules
 
 df = pd.read_csv(${JSON.stringify(fileName)})
 DROPPED_ID_COLS = ${formatPyList(droppedIds)}
-df_features = df.drop(columns=[c for c in DROPPED_ID_COLS if c in df.columns])
+df_features = df.drop(columns=[c for c in DROPPED_ID_COLS if c in df.columns]).copy()
 
-# Convert binary/boolean indicators or categorical columns into one-hot basket matrix
-basket = pd.get_dummies(df_features, prefix_sep="=").astype(bool)
+# Normalize binary indicators, discretize continuous columns, and one-hot encode categoricals
+bool_parts = []
+for col in df_features.columns:
+    s = df_features[col]
+    non_na = s.dropna()
+    norm = non_na.astype(str).str.strip().str.lower()
+    if len(norm) > 0 and norm.isin(["0", "1", "0.0", "1.0", "true", "false", "yes", "no", "y", "n", "t", "f"]).all():
+        bool_parts.append(
+            s.astype(str).str.strip().str.lower().isin(["1", "1.0", "true", "yes", "y", "t"]).rename(col)
+        )
+    elif pd.api.types.is_numeric_dtype(s) and non_na.nunique() > 3:
+        binned = pd.qcut(s.fillna(s.median()), q=3, labels=["Low", "Mid", "High"], duplicates="drop")
+        bool_parts.append(pd.get_dummies(binned, prefix=col, prefix_sep="=").astype(bool))
+    else:
+        bool_parts.append(pd.get_dummies(s.fillna("Missing").astype(str), prefix=col, prefix_sep="=").astype(bool))
 
-frequent_itemsets = apriori(basket, min_support=${minSup}, use_colnames=True)
-rules = association_rules(frequent_itemsets, metric="lift", min_threshold=1.05)
-rules = rules.sort_values(by=["lift", "confidence"], ascending=False)
+basket = pd.concat(bool_parts, axis=1) if bool_parts else pd.DataFrame()
+
+frequent_itemsets = apriori(basket, min_support=${minSup}, use_colnames=True, max_len=3)
+if len(frequent_itemsets) > 0:
+    rules = association_rules(frequent_itemsets, metric="lift", min_threshold=1.0)
+    rules = rules.sort_values(by=["lift", "confidence"], ascending=False)
+else:
+    rules = pd.DataFrame(columns=["antecedents", "consequents", "support", "confidence", "lift"])
 
 print(f"Discovered {len(frequent_itemsets)} frequent itemsets and {len(rules)} rules.")
 print(rules[["antecedents", "consequents", "support", "confidence", "lift"]].head(15))
@@ -437,16 +466,24 @@ ${modelImport}
 
 df = pd.read_csv(${JSON.stringify(fileName)})
 DROPPED_ID_COLS = ${formatPyList(droppedIds)}
-X = df.drop(columns=[c for c in DROPPED_ID_COLS if c in df.columns])
-
 NUMERIC_FEATURES = ${formatPyList(numericFeatures)}
 CATEGORICAL_FEATURES = ${formatPyList(categoricalFeatures)}
+
+for col in NUMERIC_FEATURES:
+    if col in df.columns:
+        df[col] = pd.to_numeric(
+            df[col].astype(str).str.replace(r"[$,%]", "", regex=True),
+            errors="coerce",
+        )
+
+X = df.drop(columns=[c for c in DROPPED_ID_COLS if c in df.columns])
 
 preprocessor = ColumnTransformer(
     transformers=[
         ("num", Pipeline([("imputer", SimpleImputer(strategy="median")), ("scaler", StandardScaler())]), NUMERIC_FEATURES),
         ("cat", Pipeline([("imputer", SimpleImputer(strategy="most_frequent")), ("encoder", OneHotEncoder(handle_unknown="ignore", sparse_output=False))]), CATEGORICAL_FEATURES),
-    ]
+    ],
+    sparse_threshold=0,
 )
 
 ${modelInitAndFit}

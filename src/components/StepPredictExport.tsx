@@ -1,10 +1,12 @@
 import React, { useMemo, useState } from 'react';
 import {
+  AlertCircle,
   Check,
   Code2,
   Copy,
   Download,
   FileJson,
+  Loader2,
   Package,
   RotateCcw,
   ShoppingBasket,
@@ -17,7 +19,8 @@ import {
   generatePythonScript,
 } from '../ml/codeGenerator';
 import { transformSingleRow } from '../ml/preprocessor';
-import { AnyRunResult, FeatureEncoderSpec } from '../ml/types';
+import { generatePickleViaPyodide } from '../ml/pyodideRunner';
+import { AnyRunResult, FeatureEncoderSpec, ParsedDataset } from '../ml/types';
 import {
   predictUnsupervisedSingleRow,
   recommendBasketItems,
@@ -26,6 +29,7 @@ import {
 
 interface StepPredictExportProps {
   run: AnyRunResult;
+  dataset: ParsedDataset;
 }
 
 function buildBaselineInputs(specs: FeatureEncoderSpec[]): Record<string, string | number> {
@@ -52,7 +56,24 @@ function downloadTextFile(content: string, filename: string, mimeType: string) {
   URL.revokeObjectURL(url);
 }
 
-export const StepPredictExport: React.FC<StepPredictExportProps> = ({ run }) => {
+function downloadBinaryFile(bytes: Uint8Array, filename: string) {
+  const blob = new Blob([bytes.slice().buffer], {
+    type: 'application/octet-stream',
+  });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+export const StepPredictExport: React.FC<StepPredictExportProps> = ({
+  run,
+  dataset,
+}) => {
   const specs = run.preprocessor.specs;
   const [inputs, setInputs] = useState<Record<string, string | number>>(() =>
     buildBaselineInputs(specs)
@@ -70,11 +91,16 @@ export const StepPredictExport: React.FC<StepPredictExportProps> = ({ run }) => 
   const [activeTab, setActiveTab] = useState<'python' | 'json'>('python');
   const [copied, setCopied] = useState(false);
   const [copiedPickle, setCopiedPickle] = useState(false);
+  const [isBuildingPkl, setIsBuildingPkl] = useState(false);
+  const [pklStatus, setPklStatus] = useState('');
+  const [pklError, setPklError] = useState<string | null>(null);
 
   const [lastRunId, setLastRunId] = useState(run.runId);
   if (run.runId !== lastRunId) {
     setLastRunId(run.runId);
     setInputs(buildBaselineInputs(run.preprocessor.specs));
+    setPklError(null);
+    setPklStatus('');
     if (run.learningMode === 'unsupervised' && run.model.key === 'apriori') {
       const firstAntecedent = run.model.associationRules?.[0]?.antecedents;
       setSelectedBasketItems(
@@ -144,6 +170,32 @@ export const StepPredictExport: React.FC<StepPredictExportProps> = ({ run }) => 
 
   const activeModelName =
     run.learningMode === 'supervised' ? run.winner.name : run.model.name;
+
+  const handleDownloadPickle = async () => {
+    if (isBuildingPkl) return;
+    setIsBuildingPkl(true);
+    setPklError(null);
+    setPklStatus('Initializing Python runtime & building .pkl...');
+    try {
+      const pklBytes = await generatePickleViaPyodide({
+        dataset,
+        fileName: run.fileName,
+        pythonScript,
+        needsMlxtend: isApriori,
+        onStatus: setPklStatus,
+      });
+      downloadBinaryFile(pklBytes, 'trained_model.pkl');
+    } catch (err) {
+      setPklError(
+        err instanceof Error
+          ? err.message
+          : 'Failed to generate trained_model.pkl in the browser Python runtime.'
+      );
+    } finally {
+      setIsBuildingPkl(false);
+      setPklStatus('');
+    }
+  };
 
   return (
     <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-stretch">
@@ -526,9 +578,9 @@ export const StepPredictExport: React.FC<StepPredictExportProps> = ({ run }) => 
         <div className="mt-3.5 rounded-lg border border-indigo-200 bg-indigo-50/70 px-3.5 py-2.5 flex items-start gap-2.5 text-xs text-indigo-900">
           <Package className="w-4 h-4 text-indigo-600 shrink-0 mt-0.5" />
           <span>
-            Running the exported <code className="font-mono font-semibold">.py</code> script bundles the preprocessor and model into{' '}
-            <code className="font-mono font-semibold">trained_model.pkl</code> via{' '}
-            <code className="font-mono">pickle</code>—ready to load and serve in{' '}
+            Click <strong>Download .pkl</strong> to compile{' '}
+            <code className="font-mono font-semibold">trained_model.pkl</code> directly in your browser (or run the exported{' '}
+            <code className="font-mono font-semibold">.py</code> script locally)—ready to load and serve in{' '}
             <strong>FastAPI</strong>, <strong>Flask</strong>, or <strong>Streamlit</strong>.
           </span>
         </div>
@@ -606,6 +658,13 @@ export const StepPredictExport: React.FC<StepPredictExportProps> = ({ run }) => 
           </pre>
         </div>
 
+        {pklError && (
+          <div className="mt-3 rounded-lg border border-red-200 bg-red-50 px-3.5 py-2.5 flex items-start gap-2 text-xs text-red-700">
+            <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+            <span>{pklError}</span>
+          </div>
+        )}
+
         <div className="mt-4 pt-4 border-t border-slate-200 flex flex-wrap items-center justify-between gap-3">
           <span className="text-xs text-slate-500">
             Tailored to <span className="font-mono text-slate-700">{run.fileName}</span>
@@ -635,10 +694,29 @@ export const StepPredictExport: React.FC<StepPredictExportProps> = ({ run }) => 
                   'text/x-python'
                 )
               }
-              className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold transition-colors whitespace-nowrap cursor-pointer"
+              className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg border border-slate-300 bg-white hover:bg-slate-50 text-xs font-semibold text-slate-800 transition-colors whitespace-nowrap cursor-pointer"
             >
               <Download className="w-3.5 h-3.5" />
-              Download .py (Saves .pkl)
+              Download .py
+            </button>
+
+            <button
+              type="button"
+              disabled={isBuildingPkl}
+              onClick={handleDownloadPickle}
+              className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-700 disabled:bg-indigo-500 disabled:cursor-wait text-white text-xs font-semibold transition-colors whitespace-nowrap cursor-pointer"
+            >
+              {isBuildingPkl ? (
+                <>
+                  <Loader2 className="w-3.5 h-3.5 animate-spin shrink-0" />
+                  <span>{pklStatus || 'Initializing Python runtime & building .pkl...'}</span>
+                </>
+              ) : (
+                <>
+                  <Package className="w-3.5 h-3.5 shrink-0" />
+                  <span>Download .pkl</span>
+                </>
+              )}
             </button>
           </div>
         </div>
