@@ -5,6 +5,7 @@ import {
   Copy,
   Download,
   FileJson,
+  Package,
   RotateCcw,
   ShoppingBasket,
   Sliders,
@@ -12,6 +13,7 @@ import {
 import { predictSingleRow } from '../ml/algorithms';
 import {
   generateModelStateJson,
+  generatePickleSnippet,
   generatePythonScript,
 } from '../ml/codeGenerator';
 import { transformSingleRow } from '../ml/preprocessor';
@@ -67,6 +69,7 @@ export const StepPredictExport: React.FC<StepPredictExportProps> = ({ run }) => 
   });
   const [activeTab, setActiveTab] = useState<'python' | 'json'>('python');
   const [copied, setCopied] = useState(false);
+  const [copiedPickle, setCopiedPickle] = useState(false);
 
   const [lastRunId, setLastRunId] = useState(run.runId);
   if (run.runId !== lastRunId) {
@@ -100,6 +103,7 @@ export const StepPredictExport: React.FC<StepPredictExportProps> = ({ run }) => 
   }, [run, selectedBasketItems]);
 
   const pythonScript = useMemo(() => generatePythonScript(run), [run]);
+  const pickleSnippet = useMemo(() => generatePickleSnippet(run), [run]);
   const modelJson = useMemo(() => generateModelStateJson(run), [run]);
   const activeCode = activeTab === 'python' ? pythonScript : modelJson;
 
@@ -110,6 +114,16 @@ export const StepPredictExport: React.FC<StepPredictExportProps> = ({ run }) => 
       await navigator.clipboard.writeText(activeCode);
       setCopied(true);
       setTimeout(() => setCopied(false), 1800);
+    } catch {
+      // Fallback ignored if clipboard blocked
+    }
+  };
+
+  const handleCopyPickleSnippet = async () => {
+    try {
+      await navigator.clipboard.writeText(pickleSnippet);
+      setCopiedPickle(true);
+      setTimeout(() => setCopiedPickle(false), 1800);
     } catch {
       // Fallback ignored if clipboard blocked
     }
@@ -498,15 +512,28 @@ export const StepPredictExport: React.FC<StepPredictExportProps> = ({ run }) => 
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
             <h2 className="text-base font-semibold text-slate-900">
-              Export Model & Training Code
+              Export Model & Python Pickle (.pkl) Workflow
             </h2>
             <p className="text-xs text-slate-500 mt-1">
-              Download the trained browser state (.json) or a complete Python script (.py) for {activeModelName}.
+              Download the trained browser state (.json) or a Python script (.py) that saves{' '}
+              <code className="font-mono text-slate-700">trained_model.pkl</code> for{' '}
+              {activeModelName}.
             </p>
           </div>
         </div>
 
-        <div className="mt-4 flex flex-wrap items-center justify-between gap-3 pb-4 border-b border-slate-200">
+        {/* Pickle Deployment Note */}
+        <div className="mt-3.5 rounded-lg border border-indigo-200 bg-indigo-50/70 px-3.5 py-2.5 flex items-start gap-2.5 text-xs text-indigo-900">
+          <Package className="w-4 h-4 text-indigo-600 shrink-0 mt-0.5" />
+          <span>
+            Running the exported <code className="font-mono font-semibold">.py</code> script bundles the preprocessor and model into{' '}
+            <code className="font-mono font-semibold">trained_model.pkl</code> via{' '}
+            <code className="font-mono">pickle</code>—ready to load and serve in{' '}
+            <strong>FastAPI</strong>, <strong>Flask</strong>, or <strong>Streamlit</strong>.
+          </span>
+        </div>
+
+        <div className="mt-4 flex flex-wrap items-center justify-between gap-2 pb-4 border-b border-slate-200">
           <div className="inline-flex items-center p-1 rounded-lg bg-slate-100">
             <button
               type="button"
@@ -534,26 +561,46 @@ export const StepPredictExport: React.FC<StepPredictExportProps> = ({ run }) => 
             </button>
           </div>
 
-          <button
-            type="button"
-            onClick={handleCopy}
-            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-200 hover:bg-slate-50 text-xs font-medium text-slate-700 transition-colors whitespace-nowrap cursor-pointer"
-          >
-            {copied ? (
-              <>
-                <Check className="w-3.5 h-3.5 text-emerald-600" />
-                Copied
-              </>
-            ) : (
-              <>
-                <Copy className="w-3.5 h-3.5" />
-                Copy
-              </>
-            )}
-          </button>
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={handleCopyPickleSnippet}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-indigo-200 bg-indigo-50/60 hover:bg-indigo-100/70 text-xs font-medium text-indigo-700 transition-colors whitespace-nowrap cursor-pointer"
+            >
+              {copiedPickle ? (
+                <>
+                  <Check className="w-3.5 h-3.5 text-emerald-600" />
+                  Copied .pkl Snippet
+                </>
+              ) : (
+                <>
+                  <Package className="w-3.5 h-3.5" />
+                  Copy Pickle Snippet
+                </>
+              )}
+            </button>
+
+            <button
+              type="button"
+              onClick={handleCopy}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-200 hover:bg-slate-50 text-xs font-medium text-slate-700 transition-colors whitespace-nowrap cursor-pointer"
+            >
+              {copied ? (
+                <>
+                  <Check className="w-3.5 h-3.5 text-emerald-600" />
+                  Copied
+                </>
+              ) : (
+                <>
+                  <Copy className="w-3.5 h-3.5" />
+                  Copy
+                </>
+              )}
+            </button>
+          </div>
         </div>
 
-        <div className="mt-4 flex-1 min-h-[380px] max-h-[520px] rounded-lg border border-slate-200 bg-slate-950 text-slate-100 overflow-auto">
+        <div className="mt-4 flex-1 min-h-[360px] max-h-[500px] rounded-lg border border-slate-200 bg-slate-950 text-slate-100 overflow-auto">
           <pre className="p-4 text-xs leading-relaxed font-mono">
             <code>{activeCode}</code>
           </pre>
@@ -591,7 +638,7 @@ export const StepPredictExport: React.FC<StepPredictExportProps> = ({ run }) => 
               className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold transition-colors whitespace-nowrap cursor-pointer"
             >
               <Download className="w-3.5 h-3.5" />
-              Download .py Script
+              Download .py (Saves .pkl)
             </button>
           </div>
         </div>

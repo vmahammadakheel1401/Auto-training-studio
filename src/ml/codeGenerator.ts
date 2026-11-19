@@ -6,6 +6,89 @@ function formatPyList(arr: string[]): string {
     : `[\n    ${arr.map((s) => JSON.stringify(s)).join(',\n    ')}\n]`;
 }
 
+function buildSampleRowDict(run: AnyRunResult): string {
+  const entries = run.preprocessor.specs.slice(0, 6).map((spec) => {
+    if (spec.type === 'numeric') {
+      const val = spec.median ?? 0;
+      return `    ${JSON.stringify(spec.rawName)}: ${Number.isInteger(val) ? val : Number(val.toFixed(2))}`;
+    }
+    const cat = spec.mode ?? spec.categories?.[0] ?? 'Unknown';
+    return `    ${JSON.stringify(spec.rawName)}: ${JSON.stringify(cat)}`;
+  });
+  return `{\n${entries.join(',\n')}\n}`;
+}
+
+export function generatePickleSnippet(run: AnyRunResult): string {
+  if (run.learningMode === 'unsupervised' && run.model.key === 'apriori') {
+    const firstItems = run.preprocessor.transactionItemsCatalog.slice(0, 2);
+    return `import pickle
+
+# Load the saved Apriori rules bundle produced by running the .py script
+with open("trained_model.pkl", "rb") as f:
+    bundle = pickle.load(f)
+
+rules = bundle["rules"]
+basket = set(${JSON.stringify(firstItems)})
+
+# Recommend next items where all antecedents are in the current basket
+matches = rules[rules["antecedents"].apply(lambda ant: ant.issubset(basket))]
+print(matches[["antecedents", "consequents", "confidence", "lift"]].head(5))`;
+  }
+
+  const sampleDict = buildSampleRowDict(run);
+
+  if (run.learningMode === 'unsupervised') {
+    if (run.model.key === 'hierarchical') {
+      return `import pickle
+import pandas as pd
+
+# Load the saved (preprocessor, model) bundle produced by running the .py script
+with open("trained_model.pkl", "rb") as f:
+    bundle = pickle.load(f)
+
+preprocessor = bundle["preprocessor"]
+model = bundle["model"]  # AgglomerativeClustering (trained labels in bundle["labels"])
+print("Loaded hierarchical clusters:", len(set(bundle["labels"])))
+
+# Transform new records with the exact fitted preprocessor
+new_row = pd.DataFrame([${sampleDict.replace(/\n/g, '\n')}])
+X_new = preprocessor.transform(new_row)
+print("Transformed feature vector shape:", X_new.shape)`;
+    }
+
+    const actionLine =
+      run.model.key === 'pca'
+        ? 'components = pipeline.transform(new_row)\nprint("Projected PCA coordinates:", components[0])'
+        : 'cluster_id = pipeline.predict(new_row)[0]\nprint("Assigned Cluster:", cluster_id)';
+
+    return `import pickle
+import pandas as pd
+
+# Load the bundled preprocessor + ${run.model.sklearnName} pipeline from trained_model.pkl
+with open("trained_model.pkl", "rb") as f:
+    pipeline = pickle.load(f)
+
+new_row = pd.DataFrame([${sampleDict.replace(/\n/g, '\n')}])
+${actionLine}`;
+  }
+
+  const probaLine =
+    run.taskType === 'classification'
+      ? '\nprobabilities = pipeline.predict_proba(new_row)[0]\nprint("Class probabilities:", probabilities)'
+      : '';
+
+  return `import pickle
+import pandas as pd
+
+# Load the bundled preprocessor + ${run.winner.sklearnName} pipeline from trained_model.pkl
+with open("trained_model.pkl", "rb") as f:
+    pipeline = pickle.load(f)
+
+new_row = pd.DataFrame([${sampleDict.replace(/\n/g, '\n')}])
+prediction = pipeline.predict(new_row)[0]
+print("Prediction:", prediction)${probaLine}`;
+}
+
 function generateSupervisedPythonScript(run: AutoMLRunResult): string {
   const { preprocessor, winner, fileName, targetColumn, taskType } = run;
 
@@ -127,15 +210,20 @@ print(f"Recall   : {recall_score(y_test, y_pred, average='macro', zero_division=
 print(f"F1 Score : {f1_score(y_test, y_pred, average='macro', zero_division=0):.4f}")
 print("\\nClassification Report:\\n", classification_report(y_test, y_pred))`;
 
+  const commentedSnippet = generatePickleSnippet(run)
+    .split('\n')
+    .map((line) => (line.trim() ? `# ${line}` : '#'))
+    .join('\n');
+
   return `"""
-AutoML Studio — Generated Scikit-Learn Pipeline (Supervised)
+AutoML Studio — Generated Scikit-Learn Pipeline (Pickle Export Ready)
 Dataset: ${fileName}
 Task: ${taskType === 'regression' ? 'Regression' : 'Classification'}
 Target Column: ${targetColumn}
 Auto-Selected Model: ${winner.name} (${winner.sklearnName})
 """
 
-import joblib
+import pickle
 import pandas as pd
 from sklearn.compose import ColumnTransformer
 from sklearn.impute import SimpleImputer
@@ -179,7 +267,7 @@ preprocessor = ColumnTransformer(
     ]
 )
 
-# 3. Build end-to-end training pipeline (${winner.name})
+# 3. Bundle preprocessor + model into a single Pipeline (${winner.name})
 pipeline = Pipeline(
     steps=[
         ("preprocessor", preprocessor),
@@ -200,9 +288,16 @@ pipeline.fit(X_train, y_train)
 # 5. Evaluate on holdout test split
 ${evalBlock}
 
-# 6. Persist trained pipeline for production inference
-joblib.dump(pipeline, "automl_selected_pipeline.joblib")
-print("Saved trained pipeline to automl_selected_pipeline.joblib")
+# 6. Export bundled Pipeline (preprocessor + model) to trained_model.pkl
+with open("trained_model.pkl", "wb") as f:
+    pickle.dump(pipeline, f)
+
+print("Saved bundled preprocessor + model pipeline to trained_model.pkl")
+
+# ----------------------------------------------------------------------------
+# Sample Inference: How to load trained_model.pkl in FastAPI / Flask / Streamlit
+# ----------------------------------------------------------------------------
+${commentedSnippet}
 `;
 }
 
@@ -210,16 +305,22 @@ function generateUnsupervisedPythonScript(run: UnsupervisedRunResult): string {
   const { preprocessor, model, fileName } = run;
   const droppedIds = preprocessor.droppedIdColumns;
 
+  const commentedSnippet = generatePickleSnippet(run)
+    .split('\n')
+    .map((line) => (line.trim() ? `# ${line}` : '#'))
+    .join('\n');
+
   if (model.key === 'apriori') {
     const minSup = model.minSupportUsed ?? 0.1;
     return `"""
-AutoML Studio — Generated Unsupervised Association Rule Mining Script
+AutoML Studio — Generated Unsupervised Association Rule Mining Script (Pickle Export)
 Dataset: ${fileName}
 Task: Association Rule Mining (Apriori)
 Auto-Selected Model: ${model.name}
 Requires: pip install pandas mlxtend
 """
 
+import pickle
 import pandas as pd
 from mlxtend.frequent_patterns import apriori, association_rules
 
@@ -236,6 +337,22 @@ rules = rules.sort_values(by=["lift", "confidence"], ascending=False)
 
 print(f"Discovered {len(frequent_itemsets)} frequent itemsets and {len(rules)} rules.")
 print(rules[["antecedents", "consequents", "support", "confidence", "lift"]].head(15))
+
+# Save frequent itemsets & association rules bundle to trained_model.pkl
+bundle = {
+    "frequent_itemsets": frequent_itemsets,
+    "rules": rules,
+    "min_support": ${minSup},
+}
+with open("trained_model.pkl", "wb") as f:
+    pickle.dump(bundle, f)
+
+print("Saved Apriori model bundle to trained_model.pkl")
+
+# ----------------------------------------------------------------------------
+# Sample Inference: How to load trained_model.pkl in FastAPI / Flask / Streamlit
+# ----------------------------------------------------------------------------
+${commentedSnippet}
 `;
   }
 
@@ -258,34 +375,59 @@ print(rules[["antecedents", "consequents", "support", "confidence", "lift"]].hea
       ? 'from sklearn.cluster import AgglomerativeClustering\nfrom sklearn.metrics import silhouette_score'
       : 'from sklearn.mixture import GaussianMixture\nfrom sklearn.metrics import silhouette_score';
 
-  const modelBlock =
+  const modelInitAndFit =
     model.key === 'pca'
       ? `model = PCA(n_components=${nComp}, random_state=42)
-X_pca = model.fit_transform(X_processed)
-print("Explained variance ratio:", model.explained_variance_ratio_)
-print("Cumulative variance:", model.explained_variance_ratio_.cumsum())`
+pipeline = Pipeline(steps=[("preprocessor", preprocessor), ("model", model)])
+X_pca = pipeline.fit_transform(X)
+print("Explained variance ratio:", pipeline.named_steps["model"].explained_variance_ratio_)
+print("Cumulative variance:", pipeline.named_steps["model"].explained_variance_ratio_.cumsum())
+
+with open("trained_model.pkl", "wb") as f:
+    pickle.dump(pipeline, f)
+print("Saved bundled PCA Pipeline to trained_model.pkl")`
       : model.key === 'kmeans'
       ? `model = KMeans(n_clusters=${k}, n_init="auto", random_state=42)
-labels = model.fit_predict(X_processed)
+pipeline = Pipeline(steps=[("preprocessor", preprocessor), ("model", model)])
+labels = pipeline.fit_predict(X)
+X_processed = pipeline.named_steps["preprocessor"].transform(X)
 print(f"Silhouette Score (K=${k}): {silhouette_score(X_processed, labels):.4f}")
-df["cluster"] = labels`
+df["cluster"] = labels
+
+with open("trained_model.pkl", "wb") as f:
+    pickle.dump(pipeline, f)
+print("Saved bundled KMeans Pipeline to trained_model.pkl")`
       : model.key === 'hierarchical'
-      ? `model = AgglomerativeClustering(n_clusters=${k}, linkage="ward")
+      ? `X_processed = preprocessor.fit_transform(X)
+model = AgglomerativeClustering(n_clusters=${k}, linkage="ward")
 labels = model.fit_predict(X_processed)
 print(f"Silhouette Score (K=${k}): {silhouette_score(X_processed, labels):.4f}")
-df["cluster"] = labels`
+df["cluster"] = labels
+
+# Save fitted (preprocessor, model) bundle together to trained_model.pkl
+bundle = {"preprocessor": preprocessor, "model": model, "labels": labels}
+with open("trained_model.pkl", "wb") as f:
+    pickle.dump(bundle, f)
+print("Saved (preprocessor, model) bundle to trained_model.pkl")`
       : `model = GaussianMixture(n_components=${k}, covariance_type="diag", random_state=42)
-labels = model.fit_predict(X_processed)
-print(f"BIC: {model.bic(X_processed):.1f} | Silhouette: {silhouette_score(X_processed, labels):.4f}")
-df["cluster"] = labels`;
+pipeline = Pipeline(steps=[("preprocessor", preprocessor), ("model", model)])
+labels = pipeline.fit_predict(X)
+X_processed = pipeline.named_steps["preprocessor"].transform(X)
+print(f"BIC: {pipeline.named_steps['model'].bic(X_processed):.1f} | Silhouette: {silhouette_score(X_processed, labels):.4f}")
+df["cluster"] = labels
+
+with open("trained_model.pkl", "wb") as f:
+    pickle.dump(pipeline, f)
+print("Saved bundled GaussianMixture Pipeline to trained_model.pkl")`;
 
   return `"""
-AutoML Studio — Generated Unsupervised Learning Script
+AutoML Studio — Generated Unsupervised Learning Script (Pickle Export Ready)
 Dataset: ${fileName}
 Task: ${model.family}
 Auto-Selected Model: ${model.name} (${model.sklearnName})
 """
 
+import pickle
 import pandas as pd
 from sklearn.compose import ColumnTransformer
 from sklearn.impute import SimpleImputer
@@ -307,9 +449,12 @@ preprocessor = ColumnTransformer(
     ]
 )
 
-X_processed = preprocessor.fit_transform(X)
+${modelInitAndFit}
 
-${modelBlock}
+# ----------------------------------------------------------------------------
+# Sample Inference: How to load trained_model.pkl in FastAPI / Flask / Streamlit
+# ----------------------------------------------------------------------------
+${commentedSnippet}
 `;
 }
 
