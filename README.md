@@ -37,7 +37,7 @@ npm install
 npm run dev
 ```
 
-Open the local URL printed by Vite (by default, [http://localhost:3000](http://localhost:3000)). If that port is already in use, Vite may choose another available port and show it in the terminal.
+Open the local URL printed by Vite (by default, [http://localhost:3000](https://automl-studio-orpin.vercel.app/)). If that port is already in use, Vite may choose another available port and show it in the terminal.
 
 ## Available scripts
 
